@@ -5,6 +5,6 @@
 
 ![첫 번째 샘플 이미지](./sample.png)
 
-![두 번째 샘플 이미지](./sample2.png)
+![두 번째 샘플 이미지](./sample 2.png)
 
-![세 번째 샘플 이미지](./sample3.png)
+![세 번째 샘플 이미지](./sample 3.png)
