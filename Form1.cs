@@ -1,43 +1,80 @@
-using System;
-using System.Collections.Generic;
-using System.Drawing;
-using System.IO;
-using System.Linq;
-using System.Windows.Forms;
+ï»¿using System.Drawing.Drawing2D; // InterpolationModeë¥¼ ìœ„í•´ ì¶”ê°€
+
+public class FlickerFreePanel : Panel
+{
+    public FlickerFreePanel()
+    {
+        this.DoubleBuffered = true;
+        this.ResizeRedraw = true;
+    }
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            CreateParams cp = base.CreateParams;
+            cp.ExStyle |= 0x02000000;  // WS_EX_COMPOSITED í”Œë˜ê·¸ ì¶”ê°€
+            return cp;
+        }
+    }
+}
 
 namespace bag_map
 {
     public partial class Form1 : Form
     {
-        private readonly Panel sidePanel = new Panel();
-        private readonly Panel mainPanel = new Panel();
+        private readonly Panel sidePanel = new FlickerFreePanel();
+        private readonly Panel mainPanel = new FlickerFreePanel(); // ì´ë¯¸ì§€ë¥¼ ì§ì ‘ ê·¸ë¦´ ìº”ë²„ìŠ¤
         private readonly Button[] mapButtons;
         private string currentSelectedMap = string.Empty;
-        private PictureBox pictureBox = null!;
-        private float zoomFactor = 1.0f;
-        private Point dragStartPoint;
+
+        private Image? currentImage;         // í˜„ì¬ í‘œì‹œ ì¤‘ì¸ ì›ë³¸ ì´ë¯¸ì§€
+        private Point imageOffset;           // íŒ¨ë„ ë‚´ì—ì„œ ì´ë¯¸ì§€ê°€ ê·¸ë ¤ì§ˆ ìœ„ì¹˜ (ì¢Œí‘œ)
+        private Point dragStartPoint;        // ë§ˆìš°ìŠ¤ ë“œë˜ê·¸ ì‹œì‘ ìœ„ì¹˜
+        private Point dragStartImageOffset;  // ë“œë˜ê·¸ ì‹œì‘ ì‹œì ì˜ ì´ë¯¸ì§€ ìœ„ì¹˜
+
+        // ë Œë”ë§ í’ˆì§ˆ ì œì–´ë¥¼ ìœ„í•œ í”Œë˜ê·¸
+        private bool isPanning = false;
+        private bool isZooming = false;
+        private readonly System.Windows.Forms.Timer zoomFinishTimer; // ì¤Œ ë™ì‘ ì™„ë£Œ ê°ì§€ìš© íƒ€ì´ë¨¸
+
         private readonly Dictionary<string, Image> imageCache = new Dictionary<string, Image>();
-        private readonly string[] mapNames = { "¿¡¶õ°Ö", "¹Ì¶ó¸¶", "ÅÂÀÌ°í", "µ¥½ºÅÏ", "ºñÄËµğ", "·Ğµµ", "ÆÄ¶ó¸ğ" };
-        private readonly string[] buttonTypes = { "Áöµµ", "È÷Æ®¸Ê 1", "È÷Æ®¸Ê 2" };
-        private const int INITIAL_SIZE = 1280;
+        private readonly string[] mapNames = { "ì—ë€ê²”", "ë¯¸ë¼ë§ˆ", "íƒœì´ê³ ", "ë°ìŠ¤í„´", "ë¹„ì¼„ë””", "ë¡ ë„", "íŒŒë¼ëª¨" };
+        private readonly string[] buttonTypes = { "ì§€ë„", "íˆíŠ¸ë§µ 1", "íˆíŠ¸ë§µ 2" };
 
         private Label? titleLabel;
         private bool isDetailMode = false;
         private readonly string configPath = Path.Combine(Application.StartupPath, "custom_maps.txt");
         private readonly Dictionary<string, string> customImagePaths = new Dictionary<string, string>();
 
+        // ê°ë„ ì„¤ì • ë³€ìˆ˜ë“¤ (ì´ˆê¸°ê°’ì€ LoadSettingsì—ì„œ ë®ì–´ì“°ì¼ ìˆ˜ ìˆìŒ)
+        private float zoomSensitivity = 0.1f;
+        private float panSensitivity = 1.0f;
+        private Size originalImageSize;
+        private float baseScale = 1f;
+        private float userZoom = 1f;
+        private const float MAX_ZOOM = 8f;
+        private const float MIN_ZOOM = 1.3f; // ìµœì†Œ ì¶•ì†Œ í•œê³„ì¹˜
+
         public Form1()
         {
             mapButtons = new Button[mapNames.Length];
+
+            // ì¤Œ íƒ€ì´ë¨¸ ì´ˆê¸°í™”
+            zoomFinishTimer = new System.Windows.Forms.Timer();
+            zoomFinishTimer.Interval = 150; // 0.15ì´ˆ ë™ì•ˆ íœ  ì…ë ¥ì´ ì—†ìœ¼ë©´ ì¤Œì´ ëë‚œ ê²ƒìœ¼ë¡œ ê°„ì£¼
+            zoomFinishTimer.Tick += ZoomFinishTimer_Tick;
+
             InitializeComponent();
             this.FormClosing += (s, e) => CleanupResources();
             SetupForm();
             InitializeUI();
-            LoadCustomImagePaths();
+            LoadSettings(); // ì„¤ì • ë¡œë“œ ë©”ì„œë“œ í˜¸ì¶œ
             PreloadImages();
         }
 
-        private void LoadCustomImagePaths()
+        // ê°ë„ ì„¤ì •ê¹Œì§€ í¬í•¨í•˜ì—¬ ë¡œë“œí•˜ëŠ” ë©”ì„œë“œ
+        private void LoadSettings()
         {
             try
             {
@@ -47,103 +84,221 @@ namespace bag_map
                     foreach (string line in File.ReadAllLines(configPath).Where(l => !string.IsNullOrWhiteSpace(l)))
                     {
                         string[] parts = line.Split('|');
-                        if (parts.Length == 2)
-                            customImagePaths[parts[0]] = parts[1];
+                        if (parts.Length != 2) continue;
+
+                        string key = parts[0];
+                        string value = parts[1];
+
+                        // ì„¤ì • í‚¤ë¥¼ í™•ì¸í•˜ì—¬ ê°ë„ ê°’ì„ ë¡œë“œ
+                        switch (key)
+                        {
+                            case "config_zoom_sensitivity":
+                                float.TryParse(value, out zoomSensitivity);
+                                break;
+                            case "config_pan_sensitivity":
+                                float.TryParse(value, out panSensitivity);
+                                break;
+                            default: // ê·¸ ì™¸ì—ëŠ” ì´ë¯¸ì§€ ê²½ë¡œë¡œ ì·¨ê¸‰
+                                customImagePaths[key] = value;
+                                break;
+                        }
                     }
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"¼³Á¤ ÆÄÀÏ ·Îµå Áß ¿À·ù: {ex.Message}", "¿À·ù", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show($"ì„¤ì • íŒŒì¼ ë¡œë“œ ì¤‘ ì˜¤ë¥˜: {ex.Message}", "ì˜¤ë¥˜", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                // ë¡œë“œëœ ê°’ìœ¼ë¡œ UI ì—…ë°ì´íŠ¸
+                UpdateSensitivityControls();
             }
         }
 
-        private void SaveCustomImagePaths()
+        // ê°ë„ ì„¤ì •ê¹Œì§€ í¬í•¨í•˜ì—¬ ì €ì¥í•˜ëŠ” ë©”ì„œë“œ
+        private void SaveSettings()
         {
             try
             {
-                File.WriteAllLines(configPath, customImagePaths.Select(kvp => $"{kvp.Key}|{kvp.Value}"));
+                // ì´ë¯¸ì§€ ê²½ë¡œì™€ ì„¤ì • ê°’ì„ ëª¨ë‘ í¬í•¨í•˜ì—¬ ì €ì¥
+                var linesToSave = customImagePaths.Select(kvp => $"{kvp.Key}|{kvp.Value}").ToList();
+                linesToSave.Add($"config_zoom_sensitivity|{zoomSensitivity}");
+                linesToSave.Add($"config_pan_sensitivity|{panSensitivity}");
+
+                File.WriteAllLines(configPath, linesToSave);
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"¼³Á¤ ÆÄÀÏ ÀúÀå Áß ¿À·ù: {ex.Message}", "¿À·ù", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show($"ì„¤ì • íŒŒì¼ ì €ì¥ ì¤‘ ì˜¤ë¥˜: {ex.Message}", "ì˜¤ë¥˜", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
 
         private void SetupForm()
         {
-            this.Text = "¹èÆ²±×¶ó¿îµå ¸Ê Á¤º¸";
+            this.Text = "ë°°í‹€ê·¸ë¼ìš´ë“œ ë§µ ì •ë³´";
             this.Size = new Size(1400, 900);
             this.BackColor = Color.FromArgb(18, 18, 18);
             this.ForeColor = Color.White;
             this.StartPosition = FormStartPosition.CenterScreen;
             this.MaximizeBox = false;
+            this.DoubleBuffered = true;
         }
 
         private void InitializeUI()
         {
-            // »çÀÌµå ÆĞ³Î ¼³Á¤
             sidePanel.Dock = DockStyle.Left;
             sidePanel.Width = 200;
             sidePanel.BackColor = Color.FromArgb(28, 28, 28);
 
-            // ¸ŞÀÎ ÆĞ³Î ¼³Á¤
             mainPanel.Dock = DockStyle.Fill;
             mainPanel.MinimumSize = new Size(800, 800);
             mainPanel.BackColor = Color.FromArgb(18, 18, 18);
+            mainPanel.Paint += mainPanel_Paint;
+            mainPanel.MouseDown += mainPanel_MouseDown;
+            mainPanel.MouseMove += mainPanel_MouseMove;
+            mainPanel.MouseUp += mainPanel_MouseUp;
+            mainPanel.MouseWheel += mainPanel_MouseWheel;
 
-            // ¸Ê ¹öÆ° »ı¼º
             for (int i = 0; i < mapNames.Length; i++)
             {
                 mapButtons[i] = CreateMapButton(mapNames[i], i);
                 sidePanel.Controls.Add(mapButtons[i]);
             }
 
-            // È¯¿µ ¶óº§
+            AddSensitivityControls();
+
             var welcomeLabel = new Label
             {
-                Text = "¿ŞÂÊ¿¡¼­ ¸ÊÀ» ¼±ÅÃÇØÁÖ¼¼¿ä",
-                Font = new Font("¸¼Àº °íµñ", 20, FontStyle.Bold),
+                Text = "ì™¼ìª½ì—ì„œ ë§µì„ ì„ íƒí•´ì£¼ì„¸ìš”",
+                Font = new Font("ë§‘ì€ ê³ ë”•", 20, FontStyle.Bold),
                 ForeColor = Color.White,
-                AutoSize = true
+                AutoSize = true,
+                Name = "welcomeLabel"
             };
 
-            // Á¦ÀÛÀÚ ¶óº§
             sidePanel.Controls.Add(new Label
             {
-                Text = "by µÑ¸®",
-                Font = new Font("¸¼Àº °íµñ", 14, FontStyle.Bold),
+                Text = "by ë‘˜ë¦¬",
+                Font = new Font("ë§‘ì€ ê³ ë”•", 14, FontStyle.Bold),
                 ForeColor = Color.Gray,
                 AutoSize = true,
-                Location = new Point(50, 380 + (mapNames.Length * 60) + 10)
+                Location = new Point(50, 800)
             });
 
             mainPanel.Controls.Add(welcomeLabel);
             Controls.AddRange(new Control[] { mainPanel, sidePanel });
 
-            // PictureBox ¼³Á¤
-            pictureBox = new PictureBox
-            {
-                Dock = DockStyle.None,
-                SizeMode = PictureBoxSizeMode.Zoom,
-                BackColor = mainPanel.BackColor,
-                Width = INITIAL_SIZE,
-                Height = INITIAL_SIZE
-            };
-
-            pictureBox.MouseWheel += PictureBox_MouseWheel;
-            pictureBox.MouseDown += PictureBox_MouseDown;
-            pictureBox.MouseMove += PictureBox_MouseMove;
-            pictureBox.MouseUp += (s, e) => { if (e.Button == MouseButtons.Left) pictureBox.Cursor = Cursors.Default; };
-
-            mainPanel.Controls.Add(pictureBox);
             mainPanel.PerformLayout();
-
-            // È¯¿µ ¶óº§ Áß¾Ó Á¤·Ä
             welcomeLabel.Location = new Point(
                 (mainPanel.Width - welcomeLabel.Width) / 2,
                 (mainPanel.Height - welcomeLabel.Height) / 2
             );
+        }
+
+        private void AddSensitivityControls()
+        {
+            int startY = 120 + (mapNames.Length * 60) + 20;
+
+            sidePanel.Controls.Add(new Label
+            {
+                Text = "â”â”â”â” ê°ë„ ì„¤ì • â”â”â”â”â”",
+                Font = new Font("ë§‘ì€ ê³ ë”•", 9, FontStyle.Bold),
+                ForeColor = Color.LightGray,
+                AutoSize = true,
+                Location = new Point(15, startY - 10),
+                Name = "sensitivity_title"
+            });
+
+            sidePanel.Controls.Add(new Label
+            {
+                Text = "í™•ëŒ€/ì¶•ì†Œ:",
+                Font = new Font("ë§‘ì€ ê³ ë”•", 8),
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(10, startY + 20),
+                Name = "zoom_label"
+            });
+
+            var zoomTrackBar = new TrackBar
+            {
+                Minimum = 10,
+                Maximum = 30,
+                Width = 150,
+                Height = 30,
+                Location = new Point(7, startY + 40),
+                Name = "zoom_trackbar"
+            };
+            zoomTrackBar.ValueChanged += (s, e) =>
+            {
+                zoomSensitivity = zoomTrackBar.Value / 100.0f;
+                UpdateSensitivityLabels();
+                SaveSettings();
+            };
+            sidePanel.Controls.Add(zoomTrackBar);
+
+            sidePanel.Controls.Add(new Label
+            {
+                Text = "ì´ë™ ê°ë„:",
+                Font = new Font("ë§‘ì€ ê³ ë”•", 8),
+                ForeColor = Color.White,
+                AutoSize = true,
+                Location = new Point(10, startY + 90),
+                Name = "pan_label"
+            });
+
+            var panTrackBar = new TrackBar
+            {
+                Minimum = 1,
+                Maximum = 20, // ì´ë™ ê°ë„ ìµœëŒ€ì¹˜ë¥¼ 2.0ìœ¼ë¡œ ë³€ê²½
+                Width = 150,
+                Height = 30,
+                Location = new Point(7, startY + 110),
+                Name = "pan_trackbar"
+            };
+            panTrackBar.ValueChanged += (s, e) =>
+            {
+                panSensitivity = panTrackBar.Value / 10.0f;
+                UpdateSensitivityLabels();
+                SaveSettings();
+            };
+            sidePanel.Controls.Add(panTrackBar);
+
+            sidePanel.Controls.Add(new Label { Font = new Font("ë§‘ì€ ê³ ë”•", 7), ForeColor = Color.Gray, AutoSize = true, Location = new Point(170, startY + 30), Name = "zoom_value_label" });
+            sidePanel.Controls.Add(new Label { Font = new Font("ë§‘ì€ ê³ ë”•", 7), ForeColor = Color.Gray, AutoSize = true, Location = new Point(170, startY + 90), Name = "pan_value_label" });
+
+            var resetBtn = CreateStyledButton("ê¸°ë³¸ê°’", 80, 25, new Point(10, startY + 150));
+            resetBtn.Font = new Font("ë§‘ì€ ê³ ë”•", 8);
+            resetBtn.Name = "reset_sensitivity";
+            resetBtn.Click += (s, e) =>
+            {
+                zoomSensitivity = 0.1f;
+                panSensitivity = 1.0f;
+                UpdateSensitivityControls();
+                SaveSettings();
+            };
+            sidePanel.Controls.Add(resetBtn);
+        }
+
+        // ë³€ìˆ˜ ê°’ì— ë”°ë¼ ê°ë„ ì¡°ì ˆ UIë¥¼ ì—…ë°ì´íŠ¸í•˜ëŠ” ë©”ì„œë“œ
+        private void UpdateSensitivityControls()
+        {
+            var zoomTrack = sidePanel.Controls["zoom_trackbar"] as TrackBar;
+            var panTrack = sidePanel.Controls["pan_trackbar"] as TrackBar;
+
+            if (zoomTrack != null) zoomTrack.Value = (int)(zoomSensitivity * 100);
+            if (panTrack != null) panTrack.Value = (int)(panSensitivity * 10);
+
+            UpdateSensitivityLabels();
+        }
+
+        private void UpdateSensitivityLabels()
+        {
+            var zoomValueLabel = sidePanel.Controls["zoom_value_label"] as Label;
+            var panValueLabel = sidePanel.Controls["pan_value_label"] as Label;
+
+            if (zoomValueLabel != null) zoomValueLabel.Text = $"({zoomSensitivity:F2})";
+            if (panValueLabel != null) panValueLabel.Text = $"({panSensitivity:F1})";
         }
 
         private void PreloadImages()
@@ -153,20 +308,13 @@ namespace bag_map
                 foreach (var bType in buttonTypes)
                 {
                     string key = $"{mapName}_{bType}";
-
                     if (customImagePaths.ContainsKey(key) && File.Exists(customImagePaths[key]))
                     {
-                        try
-                        {
-                            imageCache[key] = Image.FromFile(customImagePaths[key]);
-                            continue;
-                        }
+                        try { imageCache[key] = Image.FromFile(customImagePaths[key]); continue; }
                         catch { }
                     }
-
                     Image? mapImage = GetMapResourceImage(mapName, bType);
-                    if (mapImage != null)
-                        imageCache[key] = mapImage;
+                    if (mapImage != null) imageCache[key] = mapImage;
                 }
             }
         }
@@ -177,190 +325,83 @@ namespace bag_map
             {
                 switch (mapName)
                 {
-                    case "¿¡¶õ°Ö":
-                        switch (buttonType)
-                        {
-                            case "Áöµµ": return bag_map_image.Resource1.¿¡¶õ°Ö;
-                            case "È÷Æ®¸Ê 1": return bag_map_image.Resource1.¿¡¶õ°Ö_È÷Æ®¸Ê;
-                            case "È÷Æ®¸Ê 2": return bag_map_image.Resource1.¿¡¶õ°Ö_È÷Æ®¸Ê2;
-                        }
-                        break;
-                    case "¹Ì¶ó¸¶":
-                        switch (buttonType)
-                        {
-                            case "Áöµµ": return bag_map_image.Resource1.¹Ì¶ó¸¶;
-                            case "È÷Æ®¸Ê 1": return bag_map_image.Resource1.¹Ì¶ó¸¶_È÷Æ®¸Ê;
-                            case "È÷Æ®¸Ê 2": return bag_map_image.Resource1.¹Ì¶ó¸¶_È÷Æ®¸Ê2;
-                        }
-                        break;
-                    case "ÅÂÀÌ°í":
-                        switch (buttonType)
-                        {
-                            case "Áöµµ": return bag_map_image.Resource1.Å×ÀÌ°í;
-                            case "È÷Æ®¸Ê 1": return bag_map_image.Resource1.Å×ÀÌ°í_È÷Æ®¸Ê;
-                            case "È÷Æ®¸Ê 2": return bag_map_image.Resource1.Å×ÀÌ°í_È÷Æ®¸Ê2;
-                        }
-                        break;
-                    case "µ¥½ºÅÏ":
-                        switch (buttonType)
-                        {
-                            case "Áöµµ": return bag_map_image.Resource1.µ¥½ºÅÏ;
-                            case "È÷Æ®¸Ê 1": return bag_map_image.Resource1.µ¥½ºÅÏ_È÷Æ®¸Ê;
-                            case "È÷Æ®¸Ê 2": return bag_map_image.Resource1.µ¥½ºÅÏ_È÷Æ®¸Ê2;
-                        }
-                        break;
-                    case "ºñÄËµğ":
-                        switch (buttonType)
-                        {
-                            case "Áöµµ": return bag_map_image.Resource1.ºñÄËµğ;
-                            case "È÷Æ®¸Ê 1": return bag_map_image.Resource1.ºñÄËµğ_È÷Æ®¸Ê;
-                            case "È÷Æ®¸Ê 2": return bag_map_image.Resource1.ºñÄËµğ_È÷Æ®¸Ê2;
-                        }
-                        break;
-                    case "·Ğµµ":
-                        switch (buttonType)
-                        {
-                            case "Áöµµ": return bag_map_image.Resource1.·Ğµµ;
-                            case "È÷Æ®¸Ê 1": return bag_map_image.Resource1.·Ğµµ_È÷Æ®¸Ê;
-                            case "È÷Æ®¸Ê 2": return bag_map_image.Resource1.·Ğµµ_È÷Æ®¸Ê2;
-                        }
-                        break;
-                    case "ÆÄ¶ó¸ğ":
-                        if (buttonType == "Áöµµ")
-                            return bag_map_image.Resource1.ÆÄ¶ó¸ğ;
-                        break;
+                    case "ì—ë€ê²”": switch (buttonType) { case "ì§€ë„": return bag_map_image.Resource1.ì—ë€ê²”; case "íˆíŠ¸ë§µ 1": return bag_map_image.Resource1.ì—ë€ê²”_íˆíŠ¸ë§µ; case "íˆíŠ¸ë§µ 2": return bag_map_image.Resource1.ì—ë€ê²”_íˆíŠ¸ë§µ2; } break;
+                    case "ë¯¸ë¼ë§ˆ": switch (buttonType) { case "ì§€ë„": return bag_map_image.Resource1.ë¯¸ë¼ë§ˆ; case "íˆíŠ¸ë§µ 1": return bag_map_image.Resource1.ë¯¸ë¼ë§ˆ_íˆíŠ¸ë§µ; case "íˆíŠ¸ë§µ 2": return bag_map_image.Resource1.ë¯¸ë¼ë§ˆ_íˆíŠ¸ë§µ2; } break;
+                    case "íƒœì´ê³ ": switch (buttonType) { case "ì§€ë„": return bag_map_image.Resource1.í…Œì´ê³ ; case "íˆíŠ¸ë§µ 1": return bag_map_image.Resource1.í…Œì´ê³ _íˆíŠ¸ë§µ; case "íˆíŠ¸ë§µ 2": return bag_map_image.Resource1.í…Œì´ê³ _íˆíŠ¸ë§µ2; } break;
+                    case "ë°ìŠ¤í„´": switch (buttonType) { case "ì§€ë„": return bag_map_image.Resource1.ë°ìŠ¤í„´; case "íˆíŠ¸ë§µ 1": return bag_map_image.Resource1.ë°ìŠ¤í„´_íˆíŠ¸ë§µ; case "íˆíŠ¸ë§µ 2": return bag_map_image.Resource1.ë°ìŠ¤í„´_íˆíŠ¸ë§µ2; } break;
+                    case "ë¹„ì¼„ë””": switch (buttonType) { case "ì§€ë„": return bag_map_image.Resource1.ë¹„ì¼„ë””; case "íˆíŠ¸ë§µ 1": return bag_map_image.Resource1.ë¹„ì¼„ë””_íˆíŠ¸ë§µ; case "íˆíŠ¸ë§µ 2": return bag_map_image.Resource1.ë¹„ì¼„ë””_íˆíŠ¸ë§µ2; } break;
+                    case "ë¡ ë„": switch (buttonType) { case "ì§€ë„": return bag_map_image.Resource1.ë¡ ë„; case "íˆíŠ¸ë§µ 1": return bag_map_image.Resource1.ë¡ ë„_íˆíŠ¸ë§µ; case "íˆíŠ¸ë§µ 2": return bag_map_image.Resource1.ë¡ ë„_íˆíŠ¸ë§µ2; } break;
+                    case "íŒŒë¼ëª¨": if (buttonType == "ì§€ë„") return bag_map_image.Resource1.íŒŒë¼ëª¨; break;
                 }
             }
             catch { }
-
             return null;
         }
 
         private Button CreateMapButton(string mapName, int index)
         {
             var btn = CreateStyledButton(mapName, 180, 50, new Point(10, 20 + (index * 60)));
-            btn.Click += (s, e) => {
-                currentSelectedMap = mapName;
-                isDetailMode = false;
-                RemoveChangeUI();
-                ShowMapInfo(mapName);
-            };
+            btn.Click += (s, e) => { currentSelectedMap = mapName; isDetailMode = false; RemoveChangeUI(); ShowMapInfo(mapName); };
             return btn;
         }
 
         private Button CreateStyledButton(string text, int width, int height, Point location)
         {
-            var btn = new Button
-            {
-                Text = text,
-                Width = width,
-                Height = height,
-                Location = location,
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(35, 35, 35),
-                ForeColor = Color.White,
-                Font = new Font("¸¼Àº °íµñ", 12, FontStyle.Bold),
-                Cursor = Cursors.Hand
-            };
-
+            var btn = new Button { Text = text, Width = width, Height = height, Location = location, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(35, 35, 35), ForeColor = Color.White, Font = new Font("ë§‘ì€ ê³ ë”•", 12, FontStyle.Bold), Cursor = Cursors.Hand };
             btn.FlatAppearance.BorderSize = 0;
             btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(45, 45, 45);
             btn.FlatAppearance.MouseDownBackColor = Color.FromArgb(55, 55, 55);
-
             btn.MouseEnter += (s, e) => btn.BackColor = Color.FromArgb(45, 45, 45);
             btn.MouseLeave += (s, e) => btn.BackColor = Color.FromArgb(35, 35, 35);
-
             return btn;
         }
 
         private void RemoveChangeUI()
         {
-            var toRemove = sidePanel.Controls.Cast<Control>()
-                .Where(c => c.Name.StartsWith("change_")).ToList();
+            var toRemove = sidePanel.Controls.Cast<Control>().Where(c => c.Name.StartsWith("change_")).ToList();
             toRemove.ForEach(c => { sidePanel.Controls.Remove(c); c.Dispose(); });
         }
 
         private void ShowMapInfo(string mapName)
         {
-            mainPanel.Controls.Clear();
-            mainPanel.Controls.Add(pictureBox);
+            ClearMainPanel();
             isDetailMode = false;
-            pictureBox.Visible = false;
-
-            // ¸Ê ÀÌ¸§ ¶óº§
-            titleLabel = new Label
-            {
-                Text = mapName,
-                Font = new Font("¸¼Àº °íµñ", 24, FontStyle.Bold),
-                ForeColor = Color.White,
-                AutoSize = true
-            };
+            titleLabel = new Label { Text = mapName, Font = new Font("ë§‘ì€ ê³ ë”•", 24, FontStyle.Bold), ForeColor = Color.White, AutoSize = true };
             mainPanel.Controls.Add(titleLabel);
             mainPanel.PerformLayout();
             titleLabel.Location = new Point((mainPanel.Width - titleLabel.Width) / 2, 50);
-
-            // ¹öÆ° Ç¥½Ã
-            var buttonsToShow = mapName == "ÆÄ¶ó¸ğ" ? new[] { "Áöµµ" } : buttonTypes;
+            var buttonsToShow = mapName == "íŒŒë¼ëª¨" ? new[] { "ì§€ë„" } : buttonTypes;
             int totalWidth = buttonsToShow.Length * 150 + (buttonsToShow.Length - 1) * 20;
             int startX = (mainPanel.Width - totalWidth) / 2;
-
             for (int i = 0; i < buttonsToShow.Length; i++)
             {
-                var typeBtn = CreateStyledButton(buttonsToShow[i], 150, 50,
-                    new Point(startX + (i * 170), 400));
+                var typeBtn = CreateStyledButton(buttonsToShow[i], 150, 50, new Point(startX + (i * 170), 400));
                 string btnType = buttonsToShow[i];
                 typeBtn.Click += (s, e) => ShowMapDetail(mapName, btnType);
                 mainPanel.Controls.Add(typeBtn);
             }
-
             AddMapChangeUIToSidePanel(mapName, buttonsToShow);
-            pictureBox.Image = null;
-            ResetPictureBoxPosition();
+            currentImage = null;
+            ResetImageState();
+            mainPanel.Invalidate();
+        }
+
+        private void ClearMainPanel()
+        {
+            var controlsToRemove = mainPanel.Controls.OfType<Control>().ToList();
+            foreach (var ctrl in controlsToRemove) { mainPanel.Controls.Remove(ctrl); ctrl.Dispose(); }
         }
 
         private void AddMapChangeUIToSidePanel(string mapName, string[] buttonsToShow)
         {
             RemoveChangeUI();
             int startY = 20 + (mapNames.Length * 60);
-
-            sidePanel.Controls.Add(new Label
-            {
-                Text = "¦¬¦¬¦¬¦¬¦¬¦¬¦¬¦¬¦¬¦¬¦¬¦¬¦¬¦¬¦¬¦¬",
-                Font = new Font("¸¼Àº °íµñ", 8),
-                ForeColor = Color.Gray,
-                AutoSize = true,
-                Location = new Point(10, startY),
-                Name = "change_divider"
-            });
-
+            sidePanel.Controls.Add(new Label { Text = "â”â”â”â”â” ì§€ë„ ì„¤ì • â”â”â”â”â”", Font = new Font("ë§‘ì€ ê³ ë”•", 8), ForeColor = Color.Gray, AutoSize = true, Location = new Point(15, startY + 3), Name = "change_divider" });
             for (int i = 0; i < buttonsToShow.Length; i++)
             {
                 string buttonType = buttonsToShow[i];
-
-                sidePanel.Controls.Add(new Label
-                {
-                    Text = buttonType,
-                    Font = new Font("¸¼Àº °íµñ", 9),
-                    ForeColor = Color.White,
-                    AutoSize = true,
-                    Location = new Point(15, startY + 20 + (i * 30)),
-                    Name = $"change_label_{i}"
-                });
-
-                var changeBtn = new Button
-                {
-                    Text = "º¯°æ",
-                    Width = 50,
-                    Height = 22,
-                    FlatStyle = FlatStyle.Flat,
-                    BackColor = Color.FromArgb(55, 55, 55),
-                    ForeColor = Color.LightGray,
-                    Font = new Font("¸¼Àº °íµñ", 8),
-                    Cursor = Cursors.Hand,
-                    Location = new Point(130, startY + 20 + (i * 30)),
-                    Name = $"change_btn_{i}"
-                };
-
+                sidePanel.Controls.Add(new Label { Text = buttonType, Font = new Font("ë§‘ì€ ê³ ë”•", 9), ForeColor = Color.White, AutoSize = true, Location = new Point(15, startY + 20 + (i * 30)), Name = $"change_label_{i}" });
+                var changeBtn = new Button { Text = "ë³€ê²½", Width = 50, Height = 22, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(55, 55, 55), ForeColor = Color.LightGray, Font = new Font("ë§‘ì€ ê³ ë”•", 8), Cursor = Cursors.Hand, Location = new Point(130, startY + 20 + (i * 30)), Name = $"change_btn_{i}" };
                 changeBtn.FlatAppearance.BorderSize = 0;
                 changeBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(65, 65, 65);
                 changeBtn.Click += (s, e) => ChangeMapImage(mapName, buttonType);
@@ -372,46 +413,36 @@ namespace bag_map
         {
             try
             {
-                ResetPictureBoxPosition();
                 LoadMapImage(mapName, buttonType);
-
-                if (pictureBox.Image != null)
+                ResetImageState();
+                if (currentImage != null)
                 {
-                    pictureBox.Visible = true;
                     mainPanel.Focus();
                     if (!isDetailMode)
                     {
                         isDetailMode = true;
-
-                        if (titleLabel != null)
-                        {
-                            mainPanel.Controls.Remove(titleLabel);
-                            titleLabel.Dispose();
-                            titleLabel = null;
-                        }
-
-                        // Áß¾Ó ¹öÆ° Á¦°Å
-                        mainPanel.Controls.Cast<Control>()
-                            .Where(c => c is Button && buttonTypes.Contains(c.Text))
-                            .ToList()
-                            .ForEach(c => { mainPanel.Controls.Remove(c); c.Dispose(); });
-
-                        // ¿ŞÂÊ ÇÏ´Ü ¹öÆ° Ç¥½Ã
+                        ClearMainPanel();
                         ShowMapDetailButtonsLeftBottom();
                     }
+                    else
+                    {
+                        foreach (Control control in mainPanel.Controls) { if (control is Button btn && btn.Name.StartsWith("detail_")) { btn.BackColor = btn.Text == buttonType ? Color.FromArgb(45, 45, 45) : Color.FromArgb(35, 35, 35); } }
+                    }
+                    mainPanel.Invalidate();
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"¸Ê »ó¼¼Á¤º¸ Ç¥½Ã ¿À·ù: {ex.Message}", "¿À·ù", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show($"ë§µ ìƒì„¸ì •ë³´ í‘œì‹œ ì˜¤ë¥˜: {ex.Message}", "ì˜¤ë¥˜", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
         private void ShowMapDetailButtonsLeftBottom()
         {
-            var buttonsToShow = currentSelectedMap == "ÆÄ¶ó¸ğ" ? new[] { "Áöµµ" } : buttonTypes;
+            var existingDetailButtons = mainPanel.Controls.Cast<Control>().Where(c => c is Button && c.Name.StartsWith("detail_")).ToList();
+            existingDetailButtons.ForEach(c => { mainPanel.Controls.Remove(c); c.Dispose(); });
+            var buttonsToShow = currentSelectedMap == "íŒŒë¼ëª¨" ? new[] { "ì§€ë„" } : buttonTypes;
             int startY = mainPanel.Height - 200;
-
             for (int i = 0; i < buttonsToShow.Length; i++)
             {
                 string buttonType = buttonsToShow[i];
@@ -419,16 +450,13 @@ namespace bag_map
                 btn.Name = $"detail_{buttonType}";
                 btn.Click += (s, e) => ShowMapDetail(currentSelectedMap, buttonType);
                 mainPanel.Controls.Add(btn);
+                btn.BringToFront();
             }
         }
 
         private void ChangeMapImage(string mapName, string buttonType)
         {
-            using (var dialog = new OpenFileDialog
-            {
-                Filter = "ÀÌ¹ÌÁö ÆÄÀÏ|*.jpg;*.jpeg;*.png;*.bmp;*.gif|¸ğµç ÆÄÀÏ|*.*",
-                Title = $"{mapName} - {buttonType} ÀÌ¹ÌÁö ¼±ÅÃ"
-            })
+            using (var dialog = new OpenFileDialog { Filter = "ì´ë¯¸ì§€ íŒŒì¼|*.jpg;*.jpeg;*.png;*.bmp;*.gif|ëª¨ë“  íŒŒì¼|*.*", Title = $"{mapName} - {buttonType} ì´ë¯¸ì§€ ì„ íƒ" })
             {
                 if (dialog.ShowDialog() == DialogResult.OK)
                 {
@@ -438,102 +466,155 @@ namespace bag_map
                         imageCache[key]?.Dispose();
                         imageCache[key] = Image.FromFile(dialog.FileName);
                         customImagePaths[key] = dialog.FileName;
-                        SaveCustomImagePaths();
-
-                        if (pictureBox.Image != null)
-                            ShowMapDetail(mapName, buttonType);
-
-                        MessageBox.Show("ÀÌ¹ÌÁö°¡ ¼º°øÀûÀ¸·Î º¯°æµÇ¾ú½À´Ï´Ù!", "¿Ï·á",
-                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        SaveSettings();
+                        if (isDetailMode) ShowMapDetail(mapName, buttonType);
+                        MessageBox.Show("ì´ë¯¸ì§€ê°€ ì„±ê³µì ìœ¼ë¡œ ë³€ê²½ë˜ì—ˆìŠµë‹ˆë‹¤!", "ì™„ë£Œ", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     }
                     catch (Exception ex)
                     {
-                        MessageBox.Show($"ÀÌ¹ÌÁö º¯°æ ¿À·ù: {ex.Message}", "¿À·ù",
-                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        MessageBox.Show($"ì´ë¯¸ì§€ ë³€ê²½ ì˜¤ë¥˜: {ex.Message}", "ì˜¤ë¥˜", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
                 }
             }
         }
-
         private void LoadMapImage(string mapName, string buttonType)
         {
+            // [ì˜¤ë¥˜ ìˆ˜ì •] 'bType'ì„ ì˜¬ë°”ë¥¸ ë§¤ê°œë³€ìˆ˜ 'buttonType'ìœ¼ë¡œ ìˆ˜ì •
             string key = $"{mapName}_{buttonType}";
-            if (imageCache.TryGetValue(key, out Image? value) && value != null)
-                pictureBox.Image = value;
-            else
-                throw new ArgumentException("ÀÌ¹ÌÁö¸¦ Ã£À» ¼ö ¾ø½À´Ï´Ù.");
+            if (!imageCache.TryGetValue(key, out Image? img) || img == null) throw new ArgumentException("ì´ë¯¸ì§€ë¥¼ ì°¾ì„ ìˆ˜ ì—†ìŠµë‹ˆë‹¤.");
+            currentImage = img;
+            originalImageSize = img.Size;
         }
 
-        private void ResetPictureBoxPosition()
+        private void ResetImageState()
         {
-            zoomFactor = 1.0f;
-            pictureBox.Size = new Size(INITIAL_SIZE, INITIAL_SIZE);
-            pictureBox.Location = new Point(
-                (mainPanel.Width - INITIAL_SIZE) / 2,
-                (mainPanel.Height - INITIAL_SIZE) / 2
-            );
+            if (currentImage == null) return;
+            baseScale = Math.Min(mainPanel.ClientSize.Width / (float)originalImageSize.Width, mainPanel.ClientSize.Height / (float)originalImageSize.Height);
+            baseScale = Math.Min(1f, baseScale);
+            userZoom = 1.4f;
+            ApplyScaleAndCenter();
+            mainPanel.Invalidate();
         }
 
-        private void PictureBox_MouseWheel(object? sender, MouseEventArgs e)
+        private void ApplyScaleAndCenter()
         {
-            if (sender == null) return;
-
-            float oldZoom = zoomFactor;
-
-            if (e.Delta > 0)
-                zoomFactor += 0.1f;
-            else if (e.Delta < 0 && zoomFactor > 1.0f)
-                zoomFactor = Math.Max(1.0f, zoomFactor - 0.1f);
-            else
-                return;
-
-            Point mousePos = pictureBox.PointToClient(Cursor.Position);
-            float relativeX = mousePos.X / (float)pictureBox.Width;
-            float relativeY = mousePos.Y / (float)pictureBox.Height;
-
-            int newSize = (int)(INITIAL_SIZE * zoomFactor);
-            int deltaSize = newSize - pictureBox.Width;
-
-            int newX = Math.Max(mainPanel.Width - newSize, Math.Min(0,
-                pictureBox.Left - (int)(deltaSize * relativeX)));
-            int newY = Math.Max(mainPanel.Height - newSize, Math.Min(0,
-                pictureBox.Top - (int)(deltaSize * relativeY)));
-
-            pictureBox.Size = new Size(newSize, newSize);
-            pictureBox.Location = new Point(newX, newY);
+            if (currentImage == null) return;
+            float currentScale = baseScale * userZoom;
+            Size scaledSize = new Size((int)(originalImageSize.Width * currentScale), (int)(originalImageSize.Height * currentScale));
+            imageOffset = new Point((mainPanel.ClientSize.Width - scaledSize.Width) / 2, (mainPanel.ClientSize.Height - scaledSize.Height) / 2);
         }
 
-        private void PictureBox_MouseDown(object? sender, MouseEventArgs e)
+        // [ì˜¤ë¥˜ ìˆ˜ì •] senderì˜ Null í—ˆìš© ì—¬ë¶€ë¥¼ 'object?'ë¡œ ë³€ê²½
+        private void mainPanel_Paint(object? sender, PaintEventArgs e)
         {
-            if (e.Button == MouseButtons.Left)
+            if (currentImage == null) return;
+
+            // ì¤Œ ë˜ëŠ” íŒ¨ë‹ ì¤‘ì—ëŠ” ì €í™”ì§ˆ, ëë‚˜ë©´ ê³ í™”ì§ˆë¡œ ë Œë”ë§
+            if (isPanning || isZooming) { e.Graphics.InterpolationMode = InterpolationMode.NearestNeighbor; }
+            else { e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic; }
+
+            float currentScale = baseScale * userZoom;
+            var imageTotalBounds = new Rectangle(imageOffset.X, imageOffset.Y, (int)(originalImageSize.Width * currentScale), (int)(originalImageSize.Height * currentScale));
+            var panelVisibleBounds = mainPanel.ClientRectangle;
+            Rectangle visibleImageRectOnScreen = Rectangle.Intersect(panelVisibleBounds, imageTotalBounds);
+            if (visibleImageRectOnScreen.Width > 0 && visibleImageRectOnScreen.Height > 0)
             {
+                float srcX = (visibleImageRectOnScreen.X - imageOffset.X) / currentScale;
+                float srcY = (visibleImageRectOnScreen.Y - imageOffset.Y) / currentScale;
+                float srcWidth = visibleImageRectOnScreen.Width / currentScale;
+                float srcHeight = visibleImageRectOnScreen.Height / currentScale;
+                RectangleF sourceRect = new RectangleF(srcX, srcY, srcWidth, srcHeight);
+                e.Graphics.DrawImage(currentImage, visibleImageRectOnScreen, sourceRect, GraphicsUnit.Pixel);
+            }
+        }
+
+        private void mainPanel_MouseWheel(object? sender, MouseEventArgs e)
+        {
+            if (currentImage == null) return;
+            isZooming = true; // ì¤Œ ì‹œì‘
+            zoomFinishTimer.Stop(); // ì—°ì†ì ì¸ íœ  ë™ì‘ì„ ìœ„í•´ íƒ€ì´ë¨¸ ë¦¬ì…‹
+
+            Point mousePos = e.Location;
+            float oldZoom = userZoom;
+
+            if (e.Delta > 0) userZoom = Math.Min(MAX_ZOOM, userZoom + zoomSensitivity);
+            else userZoom = Math.Max(MIN_ZOOM, userZoom - zoomSensitivity);
+
+            if (Math.Abs(oldZoom - userZoom) < 0.001f) { isZooming = false; return; }
+
+            float newScale = baseScale * userZoom;
+            float oldScale = baseScale * oldZoom;
+            float imageX = (mousePos.X - imageOffset.X) / oldScale;
+            float imageY = (mousePos.Y - imageOffset.Y) / oldScale;
+            int newOffsetX = (int)(mousePos.X - (imageX * newScale));
+            int newOffsetY = (int)(mousePos.Y - (imageY * newScale));
+            imageOffset = new Point(newOffsetX, newOffsetY);
+
+            ConstrainImageOffset();
+            mainPanel.Invalidate();
+            zoomFinishTimer.Start(); // ì¤Œ ì¢…ë£Œ ê°ì§€ë¥¼ ìœ„í•´ íƒ€ì´ë¨¸ ì‹œì‘
+        }
+
+        // ì¤Œ ë™ì‘ì´ ëë‚˜ë©´ ê³ í™”ì§ˆ ë Œë”ë§ì„ ìœ„í•´ í˜¸ì¶œë˜ëŠ” ì´ë²¤íŠ¸ í•¸ë“¤ëŸ¬
+        private void ZoomFinishTimer_Tick(object? sender, EventArgs e)
+        {
+            zoomFinishTimer.Stop();
+            isZooming = false;
+            mainPanel.Invalidate(); // ìµœì¢… ê³ í™”ì§ˆ ë Œë”ë§
+        }
+
+
+        private void mainPanel_MouseDown(object? sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left && currentImage != null)
+            {
+                isPanning = true;
                 dragStartPoint = e.Location;
-                pictureBox.Cursor = Cursors.Hand;
+                dragStartImageOffset = imageOffset;
+                mainPanel.Cursor = Cursors.Hand;
             }
         }
 
-        private void PictureBox_MouseMove(object? sender, MouseEventArgs e)
+        private void mainPanel_MouseMove(object? sender, MouseEventArgs e)
+        {
+            if (!isPanning) return;
+            int dx = (int)((e.X - dragStartPoint.X) * panSensitivity);
+            int dy = (int)((e.Y - dragStartPoint.Y) * panSensitivity);
+            imageOffset = new Point(dragStartImageOffset.X + dx, dragStartImageOffset.Y + dy);
+            ConstrainImageOffset();
+            mainPanel.Invalidate();
+        }
+
+        private void mainPanel_MouseUp(object? sender, MouseEventArgs e)
         {
             if (e.Button == MouseButtons.Left)
             {
-                int newLeft = Math.Max(mainPanel.Width - pictureBox.Width,
-                    Math.Min(0, pictureBox.Left + (e.X - dragStartPoint.X)));
-                int newTop = Math.Max(mainPanel.Height - pictureBox.Height,
-                    Math.Min(0, pictureBox.Top + (e.Y - dragStartPoint.Y)));
-
-                pictureBox.Location = new Point(newLeft, newTop);
+                mainPanel.Cursor = Cursors.Default;
+                if (isPanning)
+                {
+                    isPanning = false;
+                    mainPanel.Invalidate();
+                }
             }
+        }
+
+        private void ConstrainImageOffset()
+        {
+            if (currentImage == null) return;
+            float currentScale = baseScale * userZoom;
+            Size scaledSize = new Size((int)(originalImageSize.Width * currentScale), (int)(originalImageSize.Height * currentScale));
+            int minX = mainPanel.ClientSize.Width - scaledSize.Width;
+            int minY = mainPanel.ClientSize.Height - scaledSize.Height;
+            if (scaledSize.Width <= mainPanel.ClientSize.Width) imageOffset.X = (mainPanel.ClientSize.Width - scaledSize.Width) / 2;
+            else imageOffset.X = Math.Min(0, Math.Max(minX, imageOffset.X));
+            if (scaledSize.Height <= mainPanel.ClientSize.Height) imageOffset.Y = (mainPanel.ClientSize.Height - scaledSize.Height) / 2;
+            else imageOffset.Y = Math.Min(0, Math.Max(minY, imageOffset.Y));
         }
 
         private void CleanupResources()
         {
-            if (pictureBox.Image != null)
-            {
-                pictureBox.Image = null;
-            }
-
-            foreach (var image in imageCache.Values)
-                image?.Dispose();
+            currentImage = null;
+            foreach (var image in imageCache.Values) image?.Dispose();
             imageCache.Clear();
         }
     }

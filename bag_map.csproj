@@ -7,15 +7,22 @@
 		<UseWindowsForms>true</UseWindowsForms>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<ApplicationIcon>cc.ico</ApplicationIcon>
-		<UserSecretsId>aa2f12c0-3b91-49af-a89f-1e5f540d25a9</UserSecretsId>
+	</PropertyGroup>
+
+	<!-- Release 모드일 때 PDB 디버깅 파일 생성을 비활성화합니다. -->
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+		<DebugType>none</DebugType>
+		<DebugSymbols>false</DebugSymbols>
 	</PropertyGroup>
 
 	<ItemGroup>
-	  <Content Include="cc.ico" />
+		<Content Include="cc.ico" />
 	</ItemGroup>
 
+	<!-- SkiaSharp 패키지 참조를 제거했습니다. -->
+	<!-- 다른 필요한 패키지가 있다면 여기에 추가할 수 있습니다. -->
 	<ItemGroup>
-	  <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="6.0.1" />
+		<PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="6.0.1" />
 	</ItemGroup>
 
 	<ItemGroup>
