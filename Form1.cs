@@ -43,27 +43,27 @@ namespace bag_map
         private readonly string[] buttonTypes = { "지도", "히트맵 1", "히트맵 2" };
 
         // 기본 리소스 이미지 매핑
-        private static readonly Dictionary<(string, string), Image> resourceLookup = new()
+        private static readonly Dictionary<string, Image> resourceLookup = new()
         {
-            { ("에란겔", "지도"), bag_map_image.Resource1.에란겔 },
-            { ("에란겔", "히트맵 1"), bag_map_image.Resource1.에란겔_히트맵 },
-            { ("에란겔", "히트맵 2"), bag_map_image.Resource1.에란겔_히트맵2 },
-            { ("미라마", "지도"), bag_map_image.Resource1.미라마 },
-            { ("미라마", "히트맵 1"), bag_map_image.Resource1.미라마_히트맵 },
-            { ("미라마", "히트맵 2"), bag_map_image.Resource1.미라마_히트맵2 },
-            { ("태이고", "지도"), bag_map_image.Resource1.테이고 },
-            { ("태이고", "히트맵 1"), bag_map_image.Resource1.테이고_히트맵 },
-            { ("태이고", "히트맵 2"), bag_map_image.Resource1.테이고_히트맵2 },
-            { ("데스턴", "지도"), bag_map_image.Resource1.데스턴 },
-            { ("데스턴", "히트맵 1"), bag_map_image.Resource1.데스턴_히트맵 },
-            { ("데스턴", "히트맵 2"), bag_map_image.Resource1.데스턴_히트맵2 },
-            { ("비켄디", "지도"), bag_map_image.Resource1.비켄디 },
-            { ("비켄디", "히트맵 1"), bag_map_image.Resource1.비켄디_히트맵 },
-            { ("비켄디", "히트맵 2"), bag_map_image.Resource1.비켄디_히트맵2 },
-            { ("론도", "지도"), bag_map_image.Resource1.론도 },
-            { ("론도", "히트맵 1"), bag_map_image.Resource1.론도_히트맵 },
-            { ("론도", "히트맵 2"), bag_map_image.Resource1.론도_히트맵2 },
-            { ("파라모", "지도"), bag_map_image.Resource1.파라모 }
+            ["에란겔_지도"] = bag_map_image.Resource1.에란겔,
+            ["에란겔_히트맵 1"] = bag_map_image.Resource1.에란겔_히트맵,
+            ["에란겔_히트맵 2"] = bag_map_image.Resource1.에란겔_히트맵2,
+            ["미라마_지도"] = bag_map_image.Resource1.미라마,
+            ["미라마_히트맵 1"] = bag_map_image.Resource1.미라마_히트맵,
+            ["미라마_히트맵 2"] = bag_map_image.Resource1.미라마_히트맵2,
+            ["태이고_지도"] = bag_map_image.Resource1.테이고,
+            ["태이고_히트맵 1"] = bag_map_image.Resource1.테이고_히트맵,
+            ["태이고_히트맵 2"] = bag_map_image.Resource1.테이고_히트맵2,
+            ["데스턴_지도"] = bag_map_image.Resource1.데스턴,
+            ["데스턴_히트맵 1"] = bag_map_image.Resource1.데스턴_히트맵,
+            ["데스턴_히트맵 2"] = bag_map_image.Resource1.데스턴_히트맵2,
+            ["비켄디_지도"] = bag_map_image.Resource1.비켄디,
+            ["비켄디_히트맵 1"] = bag_map_image.Resource1.비켄디_히트맵,
+            ["비켄디_히트맵 2"] = bag_map_image.Resource1.비켄디_히트맵2,
+            ["론도_지도"] = bag_map_image.Resource1.론도,
+            ["론도_히트맵 1"] = bag_map_image.Resource1.론도_히트맵,
+            ["론도_히트맵 2"] = bag_map_image.Resource1.론도_히트맵2,
+            ["파라모_지도"] = bag_map_image.Resource1.파라모
         };
 
         private Label? titleLabel;
@@ -345,7 +345,8 @@ namespace bag_map
 
         private Image? GetMapResourceImage(string mapName, string buttonType)
         {
-            if (resourceLookup.TryGetValue((mapName, buttonType), out var img))
+            string key = $"{mapName}_{buttonType}";
+            if (resourceLookup.TryGetValue(key, out var img))
             {
                 return img;
             }
