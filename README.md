@@ -12,5 +12,3 @@
 <img src="./sample.png" alt="첫 번째 샘플 이미지" width="800"/>
 <img src="./sample2.png" alt="두 번째 샘플 이미지" width="800"/>
 <img src="./sample3.png" alt="세 번째 샘플 이미지" width="800"/>
-
-<a href="https://tlanfk.github.io/" target="_blank">나만 보는 키 설정</a>
